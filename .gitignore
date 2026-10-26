@@ -40,3 +40,4 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/.pytest_cache/ 
 .ruff_cache/ 
+data/*.db 
