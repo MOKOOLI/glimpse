@@ -14,6 +14,7 @@ from xgboost import XGBClassifier
 
 MODELS_DIR = Path("models")
 MODEL_PATH = MODELS_DIR / "model.joblib"
+XGB_JSON_PATH = MODELS_DIR / "model.json"
 FEATURES_PATH = MODELS_DIR / "features.json"
 METRICS_PATH = MODELS_DIR / "metrics.json"
 
@@ -82,7 +83,14 @@ def train(df, n_splits: int = 5) -> dict:
     pipeline.fit(X, y)
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ۱) ذخیره کل Pipeline با joblib (برای محیط لوکال)
     joblib.dump(pipeline, MODEL_PATH)
+
+    # ۲) ذخیره XGBoost به فرمت بومی JSON (مستقل از نسخه، برای Streamlit Cloud)
+    pipeline.named_steps["clf"].save_model(XGB_JSON_PATH)
+
+    # ۳) ذخیره نام ویژگی‌ها
     FEATURES_PATH.write_text(json.dumps(feature_names, indent=2))
 
     metrics = {
@@ -102,5 +110,13 @@ def train(df, n_splits: int = 5) -> dict:
 
 
 def load_model(path: str | Path = MODEL_PATH):
-    """Load a trained pipeline from disk."""
-    return joblib.load(path)
+    """Load a trained pipeline from disk (joblib + XGBoost JSON for cross-version safety)."""
+    pipeline = joblib.load(path)
+
+    # بازسازی XGBoost از JSON تا مستقل از نسخه باشد
+    if XGB_JSON_PATH.exists():
+        clf = XGBClassifier()
+        clf.load_model(str(XGB_JSON_PATH))
+        pipeline.named_steps["clf"] = clf
+
+    return pipeline

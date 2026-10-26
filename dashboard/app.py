@@ -1,4 +1,4 @@
-"""Streamlit dashboard for Glimpse."""
+"""Streamlit dashboard for Glimpse (Real Data Edition)."""
 
 import sys
 from pathlib import Path
@@ -9,7 +9,6 @@ if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
 
 import json
-import io
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -26,55 +25,17 @@ st.set_page_config(page_title="Glimpse", page_icon="🧬", layout="wide")
 # مقداردهی اولیه دیتابیس
 init_db()
 
-st.title("🧬 Glimpse")
+st.title("🧬 Glimpse (Real-Data Engine)")
 st.caption("Explainable early detection of rare metabolic diseases from LC-HR-MS spectra")
 
 MODEL_DIR = Path("models")
 MODEL_PATH = MODEL_DIR / "model.joblib"
 
-# --- بخش خودترمیم (Auto-train) ---
+# بررسی وجود مدل
 if not MODEL_PATH.exists():
-    with st.spinner("مدل پیدا نشد. در حال تولید داده و آموزش مدل اولیه (حدود ۳۰ ثانیه)..."):
-        rng = np.random.default_rng(42)
-        n, n_features = 500, 120
-        mz_names = [f"mz_{i:04d}" for i in range(n_features)]
-        y = rng.integers(0, 2, size=n)
-        X = rng.gamma(shape=2.0, scale=1.0, size=(n, n_features))
-        signal_bins = [3, 17, 42, 88]
-        for i, label in enumerate(y):
-            if label == 1:
-                for b in signal_bins:
-                    X[i, b] *= rng.uniform(2.5, 4.0)
-        
-        df = pd.DataFrame(X, columns=mz_names)
-        df["label"] = y
-        df["patient_id"] = np.arange(n) // 2
-        df = preprocess(df)
-        df = build_features(df)
-        
-        MODEL_DIR.mkdir(exist_ok=True)
-        from glimpse.models.trainer import _feature_columns
-        from xgboost import XGBClassifier
-        import joblib
-        
-        feats = _feature_columns(df)
-        X_train = df[feats].to_numpy(dtype=float)
-        y_train = df["label"].to_numpy(dtype=int)
-        
-        final_model = XGBClassifier(
-            n_estimators=300, max_depth=4, learning_rate=0.05,
-            subsample=0.9, colsample_bytree=0.9,
-            eval_metric="logloss", random_state=42, n_jobs=-1,
-        )
-        final_model.fit(X_train, y_train)
-        joblib.dump(final_model, MODEL_PATH)
-        
-        with open(MODEL_DIR / "features.json", "w") as f:
-            json.dump(feats, f)
-        
-        metrics = {"auc_mean": 0.98, "auc_ci95": [0.97, 0.99], "n_features": len(feats)}
-        with open(MODEL_DIR / "metrics.json", "w") as f:
-            json.dump(metrics, f)
+    st.error("🚨 Model not found! Please ensure `model.joblib` is available in the `models/` directory.")
+    st.info("If you are running this locally, run: `python -m glimpse.cli train --input data/real/real_dataset.csv`")
+    st.stop()
 
 # --- نمایش متریک‌ها ---
 metrics_path = MODEL_DIR / "metrics.json"
@@ -85,13 +46,19 @@ if metrics_path.exists():
     ci = metrics.get('auc_ci95', [0, 0])
     col2.metric("95% CI", f"[{ci[0]:.3f}, {ci[1]:.3f}]")
     col3.metric("Features", metrics.get("n_features", 0))
+else:
+    st.warning("Model metrics not found. Run training first.")
 
 st.divider()
 
 # --- ساخت تب‌ها ---
 tab1, tab2 = st.tabs(["🔮 Predict Sample", "📜 Prediction History"])
 
-model, features = load_model()
+try:
+    model, features = load_model()
+except Exception as e:
+    st.error(f"Error loading model: {e}")
+    st.stop()
 
 with tab1:
     st.subheader("Enter patient sample data")
@@ -101,33 +68,31 @@ with tab1:
     sample_data = None
     
     if input_method == "📝 Manual Input (Paste Numbers)":
-        st.info(f"Please enter exactly {len(features)} comma-separated numbers (e.g., 0.1, 2.5, 0.0, ...).")
+        st.info(f"Please enter exactly {len(features)} comma-separated numbers.")
         text_input = st.text_area("Paste feature values here:", height=150)
         
         if st.button("Predict from Text"):
             try:
-                # تبدیل متن ورودی به لیست اعداد
                 values = [float(x.strip()) for x in text_input.split(",") if x.strip()]
                 if len(values) != len(features):
-                    st.error(f"Error: Expected {len(features)} features, but got {len(values)}. Please check your input.")
+                    st.error(f"Error: Expected {len(features)} features, but got {len(values)}.")
                 else:
                     sample_data = np.array(values, dtype=float)
             except ValueError:
                 st.error("Error: Please make sure you only enter numbers separated by commas.")
                 
     elif input_method == "📁 Upload CSV File":
-        st.info("Upload a CSV file where the first row is the header (feature names) and the second row contains the values for a single sample.")
+        st.info("Upload a CSV file with the same feature columns as the model.")
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
         
         if uploaded_file is not None:
             try:
                 df_upload = pd.read_csv(uploaded_file)
-                # بررسی اینکه آیا تمام فیچرهای مورد نیاز در فایل هستند
+                # اگر ستون‌های مورد نیاز موجود باشند
                 missing_feats = [f for f in features if f not in df_upload.columns]
                 if missing_feats:
-                    st.error(f"Error: The uploaded file is missing {len(missing_feats)} required features. Example missing: {missing_feats[:5]}")
+                    st.error(f"Error: Missing {len(missing_feats)} required features. Example: {missing_feats[:5]}")
                 else:
-                    # گرفتن اولین ردیف به عنوان نمونه
                     sample_data = df_upload[features].iloc[0].to_numpy(dtype=float)
                     st.success("File loaded successfully! Ready to predict.")
             except Exception as e:
