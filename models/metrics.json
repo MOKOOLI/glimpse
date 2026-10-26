@@ -1,10 +1,10 @@
 {
-  "auc_mean": 0.9911,
-  "auc_std": 0.0164,
+  "auc_mean": 1.0,
+  "auc_std": 0.0,
   "auc_ci95": [
-    0.9767,
-    1.0055
+    1.0,
+    1.0
   ],
-  "n_samples": 200,
-  "n_features": 124
+  "n_samples": 241,
+  "n_features": 1207
 }
