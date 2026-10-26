@@ -54,3 +54,19 @@ Raw mzML/mzXML (or Tabular Peaks)
    ├── Dashboard (Streamlit)
    ├── Batch CLI
    └── n8n alert workflow
+
+## Dataset & Model Performance
+
+- **Source:** Miller et al. 2015 (JIMD) supplementary dataset — 88 samples
+  (18 MSUD, 70 no-diagnosis), 1203 metabolite features.
+- **Model:** XGBoost (5-fold stratified CV). A Logistic Regression baseline
+  also reaches AUC = 1.0 on the same data.
+- **AUC = 1.0 is not data leakage:**
+  - Permutation test (shuffled labels) → AUC ≈ 0.49.
+  - The separation is driven by canonical MSUD biomarkers with large effect
+    sizes: `allo-isoleucine` (Δ mean = +8.1), `4-methyl-2-oxopentanoate`,
+    `alpha-hydroxyisovalerate`, `isovalerylcarnitine (C5)`,
+    `hydroxyisovaleroylcarnitine (C5)`, `isoleucine`.
+- **Caveat:** Small single-center cohort (n=88). AUC = 1.0 is not expected on
+  external cohorts. Clinical use requires external validation, which is not
+  included here.

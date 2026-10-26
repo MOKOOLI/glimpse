@@ -5,6 +5,14 @@
     1.0,
     1.0
   ],
-  "n_samples": 241,
-  "n_features": 1207
+  "n_samples": 88,
+  "n_features": 1203,
+  "n_features_selected": 1203,
+  "cv_scores": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ]
 }
