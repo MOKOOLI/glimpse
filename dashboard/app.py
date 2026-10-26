@@ -1,16 +1,20 @@
 """Streamlit dashboard for Glimpse."""
 
-from __future__ import annotations
-
-import json
+import sys
 from pathlib import Path
 
+# --- اضافه کردن مسیر src به sys.path برای Streamlit Cloud ---
+_src_dir = str(Path(__file__).resolve().parents[1] / "src")
+if _src_dir not in sys.path:
+    sys.path.insert(0, _src_dir)
+
+import json
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-from glimpse.models.trainer import load_model, train
+from glimpse.models.trainer import load_model
 from glimpse.features.engineering import build_features
 from glimpse.preprocessing.pipeline import preprocess
 from glimpse.explain.shap_explainer import explain_sample
@@ -26,9 +30,6 @@ MODEL_PATH = MODEL_DIR / "model.joblib"
 # --- بخش خودترمیم: اگر مدل نبود، در حافظه موقت ساخته می‌شود ---
 if not MODEL_PATH.exists():
     with st.spinner("مدل پیدا نشد. در حال تولید داده و آموزش مدل اولیه (حدود ۳۰ ثانیه)..."):
-        import numpy as np
-        import pandas as pd
-        
         # تولید داده شبیه‌سازی‌شده در حافظه
         rng = np.random.default_rng(42)
         n, n_features = 500, 120
