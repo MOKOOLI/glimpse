@@ -9,6 +9,7 @@ if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
 
 import json
+import io
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -87,47 +88,81 @@ if metrics_path.exists():
 
 st.divider()
 
-# --- ساخت تب‌ها برای داشبورد ---
-tab1, tab2 = st.tabs(["🔮 Single Prediction", "📜 Prediction History"])
+# --- ساخت تب‌ها ---
+tab1, tab2 = st.tabs(["🔮 Predict Sample", "📜 Prediction History"])
 
 model, features = load_model()
 
 with tab1:
-    st.subheader("Predict a new sample")
-    with st.form("sample_form"):
-        st.write("Enter feature values (or leave zeros for a quick demo):")
-        cols = st.columns(4)
-        values = []
-        for i, f in enumerate(features):
-            with cols[i % 4]:
-                values.append(st.number_input(f, value=0.0, key=f"f_{i}"))
-        submitted = st.form_submit_button("Predict")
+    st.subheader("Enter patient sample data")
+    
+    input_method = st.radio("Choose input method:", ["📝 Manual Input (Paste Numbers)", "📁 Upload CSV File"])
+    
+    sample_data = None
+    
+    if input_method == "📝 Manual Input (Paste Numbers)":
+        st.info(f"Please enter exactly {len(features)} comma-separated numbers (e.g., 0.1, 2.5, 0.0, ...).")
+        text_input = st.text_area("Paste feature values here:", height=150)
+        
+        if st.button("Predict from Text"):
+            try:
+                # تبدیل متن ورودی به لیست اعداد
+                values = [float(x.strip()) for x in text_input.split(",") if x.strip()]
+                if len(values) != len(features):
+                    st.error(f"Error: Expected {len(features)} features, but got {len(values)}. Please check your input.")
+                else:
+                    sample_data = np.array(values, dtype=float)
+            except ValueError:
+                st.error("Error: Please make sure you only enter numbers separated by commas.")
+                
+    elif input_method == "📁 Upload CSV File":
+        st.info("Upload a CSV file where the first row is the header (feature names) and the second row contains the values for a single sample.")
+        uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+        
+        if uploaded_file is not None:
+            try:
+                df_upload = pd.read_csv(uploaded_file)
+                # بررسی اینکه آیا تمام فیچرهای مورد نیاز در فایل هستند
+                missing_feats = [f for f in features if f not in df_upload.columns]
+                if missing_feats:
+                    st.error(f"Error: The uploaded file is missing {len(missing_feats)} required features. Example missing: {missing_feats[:5]}")
+                else:
+                    # گرفتن اولین ردیف به عنوان نمونه
+                    sample_data = df_upload[features].iloc[0].to_numpy(dtype=float)
+                    st.success("File loaded successfully! Ready to predict.")
+            except Exception as e:
+                st.error(f"Error reading CSV: {e}")
 
-    if submitted:
-        x = np.array(values, dtype=float)
-        result = explain_sample(model, features, x)
-        
-        # ذخیره در دیتابیس
-        log_prediction(result['risk_score'], result['risk_label'], result['top_contributions'])
-        
-        st.success("Prediction saved to database!")
-        st.metric("Risk score", f"{result['risk_score']:.3f}")
-        st.write(f"Label: **{result['risk_label']}**")
-        
-        st.subheader("Top contributing features")
-        df_res = pd.DataFrame(result["top_contributions"])
-        fig, ax = plt.subplots(figsize=(8, 3))
-        ax.barh(df_res["feature"], df_res["shap_value"])
-        ax.set_xlabel("SHAP value (impact on risk)")
-        st.pyplot(fig)
-        st.dataframe(df_res, use_container_width=True)
+    # اگر داده آماده بود، پیش‌بینی کن
+    if sample_data is not None:
+        with st.spinner("Analyzing sample..."):
+            result = explain_sample(model, features, sample_data)
+            
+            # ذخیره در دیتابیس
+            log_prediction(result['risk_score'], result['risk_label'], result['top_contributions'])
+            
+            st.divider()
+            st.subheader("Prediction Result")
+            st.metric("Risk score", f"{result['risk_score']:.3f}")
+            
+            if result['risk_label'] == 'high':
+                st.error(f"Label: **{result['risk_label'].upper()} RISK** 🚨")
+            else:
+                st.success(f"Label: **{result['risk_label'].upper()} RISK** ✅")
+            
+            st.subheader("Top contributing features (SHAP)")
+            df_res = pd.DataFrame(result["top_contributions"])
+            fig, ax = plt.subplots(figsize=(8, 3))
+            ax.barh(df_res["feature"], df_res["shap_value"], color='teal')
+            ax.set_xlabel("SHAP value (impact on risk)")
+            st.pyplot(fig)
+            st.dataframe(df_res, use_container_width=True)
 
 with tab2:
     st.subheader("Recent Predictions")
     history = get_predictions(limit=20)
     if history:
         df_history = pd.DataFrame(history)
-        # مرتب‌سازی ستون‌ها برای نمایش بهتر
         df_history = df_history[["timestamp", "risk_score", "risk_label", "top_feature"]]
         st.dataframe(df_history, use_container_width=True)
     else:
