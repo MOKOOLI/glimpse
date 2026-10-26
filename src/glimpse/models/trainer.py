@@ -45,29 +45,22 @@ def _build_pipeline() -> Pipeline:
 
 
 def _clean_features(df) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """Return (X, y, feature_names) with all non-numeric/aux/empty columns removed."""
     if LABEL_COL not in df.columns:
         raise ValueError(f"Missing '{LABEL_COL}' column")
 
     y = df[LABEL_COL].astype(int).values
-
-    # فقط ستون‌های عددی
     X = df.drop(columns=[LABEL_COL]).select_dtypes(include=[np.number])
 
-    # حذف ستون‌های کمکی (patient_id و مانند آن)
     drop_cols = [c for c in X.columns if c in AUX_COLS]
     if drop_cols:
         X = X.drop(columns=drop_cols, errors="ignore")
 
-    # حذف ستون‌های کاملاً خالی (همه NaN)
     X = X.loc[:, X.notna().any(axis=0)]
-
     feature_names = X.columns.tolist()
     return X.values, y, feature_names
 
 
 def train(df, n_splits: int = 5) -> dict:
-    """Train model on dataframe with 'label' column. Returns metrics dict."""
     X, y, feature_names = _clean_features(df)
 
     n_splits = min(n_splits, int(np.bincount(y).min()))
@@ -79,18 +72,11 @@ def train(df, n_splits: int = 5) -> dict:
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
     scores = cross_val_score(pipeline, X, y, cv=cv, scoring="roc_auc", n_jobs=-1)
 
-    # fit نهایی روی کل داده برای ذخیره مدل
     pipeline.fit(X, y)
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # ۱) ذخیره کل Pipeline با joblib (برای محیط لوکال)
     joblib.dump(pipeline, MODEL_PATH)
-
-    # ۲) ذخیره XGBoost به فرمت بومی JSON (مستقل از نسخه، برای Streamlit Cloud)
     pipeline.named_steps["clf"].save_model(XGB_JSON_PATH)
-
-    # ۳) ذخیره نام ویژگی‌ها
     FEATURES_PATH.write_text(json.dumps(feature_names, indent=2))
 
     metrics = {
@@ -110,13 +96,24 @@ def train(df, n_splits: int = 5) -> dict:
 
 
 def load_model(path: str | Path = MODEL_PATH):
-    """Load a trained pipeline from disk (joblib + XGBoost JSON for cross-version safety)."""
+    """
+    Load a trained pipeline from disk.
+
+    Returns
+    -------
+    (pipeline, feature_names) : tuple
+        pipeline : sklearn Pipeline (with XGBoost rebuilt from JSON if available)
+        feature_names : list[str] (feature names in the order the model expects)
+    """
     pipeline = joblib.load(path)
 
-    # بازسازی XGBoost از JSON تا مستقل از نسخه باشد
     if XGB_JSON_PATH.exists():
         clf = XGBClassifier()
         clf.load_model(str(XGB_JSON_PATH))
         pipeline.named_steps["clf"] = clf
 
-    return pipeline
+    feature_names = []
+    if FEATURES_PATH.exists():
+        feature_names = json.loads(FEATURES_PATH.read_text())
+
+    return pipeline, feature_names

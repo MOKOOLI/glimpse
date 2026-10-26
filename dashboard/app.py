@@ -1,134 +1,184 @@
-"""Streamlit dashboard for Glimpse (Real Data Edition)."""
+"""Glimpse — Streamlit dashboard for explainable IEM detection."""
+from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
-# --- اضافه کردن مسیر src به sys.path برای Streamlit Cloud ---
-_src_dir = str(Path(__file__).resolve().parents[1] / "src")
-if _src_dir not in sys.path:
-    sys.path.insert(0, _src_dir)
+# اضافه کردن src به sys.path برای Streamlit Cloud
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
-import json
+import joblib
 import numpy as np
 import pandas as pd
+import shap
 import streamlit as st
-import matplotlib.pyplot as plt
+from xgboost import XGBClassifier
 
-from glimpse.models.trainer import load_model
-from glimpse.features.engineering import build_features
-from glimpse.preprocessing.pipeline import preprocess
-from glimpse.explain.shap_explainer import explain_sample
-from glimpse.db import init_db, log_prediction, get_predictions
+from glimpse.db import init_db, log_prediction, get_history
+
+MODELS_DIR = ROOT / "models"
+MODEL_PATH = MODELS_DIR / "model.joblib"
+XGB_JSON_PATH = MODELS_DIR / "model.json"
+FEATURES_PATH = MODELS_DIR / "features.json"
+METRICS_PATH = MODELS_DIR / "metrics.json"
 
 st.set_page_config(page_title="Glimpse", page_icon="🧬", layout="wide")
 
-# مقداردهی اولیه دیتابیس
-init_db()
 
-st.title("🧬 Glimpse (Real-Data Engine)")
-st.caption("Explainable early detection of rare metabolic diseases from LC-HR-MS spectra")
+@st.cache_resource
+def load_model():
+    """بارگذاری مدل با سازگاری بین نسخه‌های XGBoost."""
+    if not MODEL_PATH.exists():
+        return None, None
 
-MODEL_DIR = Path("models")
-MODEL_PATH = MODEL_DIR / "model.joblib"
+    pipeline = joblib.load(MODEL_PATH)
 
-# بررسی وجود مدل
-if not MODEL_PATH.exists():
-    st.error("🚨 Model not found! Please ensure `model.joblib` is available in the `models/` directory.")
-    st.info("If you are running this locally, run: `python -m glimpse.cli train --input data/real/real_dataset.csv`")
-    st.stop()
+    if XGB_JSON_PATH.exists():
+        clf = XGBClassifier()
+        clf.load_model(str(XGB_JSON_PATH))
+        pipeline.named_steps["clf"] = clf
 
-# --- نمایش متریک‌ها ---
-metrics_path = MODEL_DIR / "metrics.json"
-col1, col2, col3 = st.columns(3)
-if metrics_path.exists():
-    metrics = json.loads(metrics_path.read_text())
-    col1.metric("AUC (CV)", f"{metrics.get('auc_mean', 0.0):.3f}")
-    ci = metrics.get('auc_ci95', [0, 0])
-    col2.metric("95% CI", f"[{ci[0]:.3f}, {ci[1]:.3f}]")
-    col3.metric("Features", metrics.get("n_features", 0))
-else:
-    st.warning("Model metrics not found. Run training first.")
+    features = json.loads(FEATURES_PATH.read_text()) if FEATURES_PATH.exists() else []
+    return pipeline, features
 
-st.divider()
 
-# --- ساخت تب‌ها ---
-tab1, tab2 = st.tabs(["🔮 Predict Sample", "📜 Prediction History"])
+@st.cache_data
+def load_metrics():
+    if not METRICS_PATH.exists():
+        return {}
+    return json.loads(METRICS_PATH.read_text())
 
-try:
+
+def build_input_vector(
+    user_values: dict[str, float], features: list[str]
+) -> tuple[np.ndarray, list[str]]:
+    """
+    ساخت بردار ورودی از دیکشنری {نام_متابولیت: مقدار}.
+    اگر نامی با ویژگی‌های مدل نخواند، آن را نادیده می‌گیرد.
+    بقیه با 0 پر می‌شوند.
+    """
+    unknown = [k for k in user_values if k not in features]
+    known = [k for k in user_values if k in features]
+
+    if not known:
+        raise ValueError(
+            "هیچ‌کدام از نام‌های وارد شده با ویژگی‌های مدل مطابقت ندارد. "
+            f"مثلاً یکی از این نام‌ها را امتحان کن: {features[:5]}"
+        )
+
+    vec = np.zeros(len(features), dtype=float)
+    idx = {name: i for i, name in enumerate(features)}
+    for k in known:
+        vec[idx[k]] = user_values[k]
+    return vec.reshape(1, -1), unknown
+
+
+def main():
+    init_db()
+
+    st.title("🧬 Glimpse")
+    st.caption("Explainable early detection of rare metabolic diseases from LC-HR-MS spectra")
+
     model, features = load_model()
-except Exception as e:
-    st.error(f"Error loading model: {e}")
-    st.stop()
+    metrics = load_metrics()
 
-with tab1:
-    st.subheader("Enter patient sample data")
-    
-    input_method = st.radio("Choose input method:", ["📝 Manual Input (Paste Numbers)", "📁 Upload CSV File"])
-    
-    sample_data = None
-    
-    if input_method == "📝 Manual Input (Paste Numbers)":
-        st.info(f"Please enter exactly {len(features)} comma-separated numbers.")
-        text_input = st.text_area("Paste feature values here:", height=150)
-        
-        if st.button("Predict from Text"):
+    if model is None or not features:
+        st.error("مدل یافت نشد. ابتدا `python -m glimpse.cli train` را اجرا کنید.")
+        st.stop()
+
+    # کارت‌های بالای صفحه
+    col1, col2, col3 = st.columns(3)
+    col1.metric("AUC (CV)", f"{metrics.get('auc_mean', 0):.3f}")
+    col2.metric(
+        "95% CI",
+        f"[{metrics.get('auc_ci95', [0, 0])[0]:.3f}, {metrics.get('auc_ci95', [0, 0])[1]:.3f}]",
+    )
+    col3.metric("Features", metrics.get("n_features", len(features)))
+
+    st.divider()
+
+    tab1, tab2 = st.tabs(["🔬 Predict Sample", "📜 Prediction History"])
+
+    with tab1:
+        st.subheader("ورود داده نمونه")
+        st.caption(
+            "می‌توانی نام متابولیت و مقدار آن را وارد کنی. "
+            "مثلاً: `leucine=3.5, isoleucine=2.1`"
+        )
+
+        text = st.text_area(
+            "مقادیر به شکل name=value (با کاما جدا شوند):",
+            height=120,
+            placeholder="leucine=3.5, isoleucine=2.1, valine=1.8",
+        )
+
+        user_values = {}
+        if text.strip():
             try:
-                values = [float(x.strip()) for x in text_input.split(",") if x.strip()]
-                if len(values) != len(features):
-                    st.error(f"Error: Expected {len(features)} features, but got {len(values)}.")
-                else:
-                    sample_data = np.array(values, dtype=float)
-            except ValueError:
-                st.error("Error: Please make sure you only enter numbers separated by commas.")
-                
-    elif input_method == "📁 Upload CSV File":
-        st.info("Upload a CSV file with the same feature columns as the model.")
-        uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-        
-        if uploaded_file is not None:
+                for pair in text.replace("\n", ",").split(","):
+                    pair = pair.strip()
+                    if not pair:
+                        continue
+                    if "=" not in pair:
+                        raise ValueError(f"جفت نامعتبر: '{pair}'. باید name=value باشد.")
+                    name, val = pair.split("=", 1)
+                    user_values[name.strip()] = float(val.strip())
+            except ValueError as e:
+                st.error(str(e))
+                user_values = {}
+
+        if user_values:
             try:
-                df_upload = pd.read_csv(uploaded_file)
-                # اگر ستون‌های مورد نیاز موجود باشند
-                missing_feats = [f for f in features if f not in df_upload.columns]
-                if missing_feats:
-                    st.error(f"Error: Missing {len(missing_feats)} required features. Example: {missing_feats[:5]}")
-                else:
-                    sample_data = df_upload[features].iloc[0].to_numpy(dtype=float)
-                    st.success("File loaded successfully! Ready to predict.")
-            except Exception as e:
-                st.error(f"Error reading CSV: {e}")
+                input_vector, unknown = build_input_vector(user_values, features)
+                if unknown:
+                    st.warning(
+                        f"این نام‌ها با مدل مطابقت نداشتند و نادیده گرفته شدند: {unknown[:5]}"
+                    )
 
-    # اگر داده آماده بود، پیش‌بینی کن
-    if sample_data is not None:
-        with st.spinner("Analyzing sample..."):
-            result = explain_sample(model, features, sample_data)
-            
-            # ذخیره در دیتابیس
-            log_prediction(result['risk_score'], result['risk_label'], result['top_contributions'])
-            
-            st.divider()
-            st.subheader("Prediction Result")
-            st.metric("Risk score", f"{result['risk_score']:.3f}")
-            
-            if result['risk_label'] == 'high':
-                st.error(f"Label: **{result['risk_label'].upper()} RISK** 🚨")
-            else:
-                st.success(f"Label: **{result['risk_label'].upper()} RISK** ✅")
-            
-            st.subheader("Top contributing features (SHAP)")
-            df_res = pd.DataFrame(result["top_contributions"])
-            fig, ax = plt.subplots(figsize=(8, 3))
-            ax.barh(df_res["feature"], df_res["shap_value"], color='teal')
-            ax.set_xlabel("SHAP value (impact on risk)")
-            st.pyplot(fig)
-            st.dataframe(df_res, use_container_width=True)
+                st.success(f"✅ {len(user_values) - len(unknown)} مقدار معتبر دریافت شد.")
 
-with tab2:
-    st.subheader("Recent Predictions")
-    history = get_predictions(limit=20)
-    if history:
-        df_history = pd.DataFrame(history)
-        df_history = df_history[["timestamp", "risk_score", "risk_label", "top_feature"]]
-        st.dataframe(df_history, use_container_width=True)
-    else:
-        st.info("No predictions recorded yet. Go to the first tab and make a prediction!")
+                if st.button("پیش‌بینی", type="primary"):
+                    proba = model.predict_proba(input_vector)[:, 1][0]
+                    st.metric("احتمال بیماری", f"{proba:.3f}")
+                    log_prediction(risk_score=float(proba))
+
+                    # SHAP برای توضیح
+                    st.subheader("🔍 چرا مدل این‌طور تصمیم گرفت؟")
+                    with st.spinner("محاسبه SHAP..."):
+                        # XGBoost داخل Pipeline آموزش دیده، ولی SHAP را روی
+                        # imputer+scaler+clf می‌زنیم تا مقادیر نهایی را ببینیم.
+                        X_scaled = model[:-1].transform(input_vector)
+                        explainer = shap.TreeExplainer(model.named_steps["clf"])
+                        shap_vals = explainer.shap_values(X_scaled)[0]
+
+                    # مهم‌ترین ویژگی‌ها بر اساس |SHAP|
+                    order = np.argsort(np.abs(shap_vals))[::-1][:10]
+                    rows = []
+                    for i in order:
+                        rows.append(
+                            {
+                                "متابولیت": features[i],
+                                "مقدار ورودی": float(input_vector[0, i]),
+                                "SHAP (تأثیر)": float(shap_vals[i]),
+                            }
+                        )
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+            except ValueError as e:
+                st.error(str(e))
+
+    with tab2:
+        st.subheader("تاریخچه پیش‌بینی‌ها")
+        history = get_history()
+        if history:
+            st.dataframe(pd.DataFrame(history))
+        else:
+            st.info("هنوز پیش‌بینی‌ای ثبت نشده است.")
+
+
+if __name__ == "__main__":
+    main()
