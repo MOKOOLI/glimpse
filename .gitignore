@@ -1,0 +1,42 @@
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Models (binary files)
+models/*.joblib
+models/*.pkl
+
+# Generated data
+data/synthetic/*.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Streamlit
+.streamlit/
+
+# Jupyter
+.ipynb_checkpoints/.pytest_cache/ 
+.ruff_cache/ 
